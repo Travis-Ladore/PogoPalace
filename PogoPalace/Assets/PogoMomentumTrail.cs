@@ -1,7 +1,7 @@
 
 using UnityEngine;
 
-[RequireComponent(typeof(Rigidbody))]
+
 public class PogoMomentumTrail : MonoBehaviour
 {
     [Header("References")]
@@ -31,7 +31,7 @@ public class PogoMomentumTrail : MonoBehaviour
     private void Awake()
     {
         if (playerRigidbody == null)
-            playerRigidbody = GetComponent<Rigidbody>();
+            playerRigidbody = GetComponentInParent<Rigidbody>();
 
         if (trailRenderer == null)
             trailRenderer = GetComponentInChildren<TrailRenderer>();
