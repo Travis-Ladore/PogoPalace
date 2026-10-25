@@ -5,39 +5,62 @@ using UnityEngine.InputSystem;
 [RequireComponent(typeof(Rigidbody))]
 public class PogoSpring : MonoBehaviour
 {
-    [Header("References")]
+    [Header("Input")]
     public InputActionReference jumpAction;
-    public LayerMask groundMask;
+
+    [Header("Physics References")]
+    public Transform springOrigin;
+
+    [Tooltip("A fixed, unanimated reference marking the physical tip of the pogo.")]
+    public Transform pogoTip;
+
+    [Header("Visual References")]
     public Transform lowerRodVisual;
     public Transform springVisual;
 
-    [Header("Spring Geometry")]
-    public float restLength = 1.5f;
-    public float springTravel = 0.5f;
+    [Header("Ground Detection")]
+    public LayerMask groundMask;
     public float rayRadius = 0.12f;
 
-    [Header("Spring Physics")]
+    [Range(0f, 90f)]
+    public float maxGroundAngle = 55f;
+
+    public bool restrictSpringTilt = true;
+
+    [Range(0f, 180f)]
+    public float maxSpringTilt = 70f;
+
+    [Header("Spring Dimensions")]
+    [Tooltip("Used as the physical spring length when automatic tip measurement is disabled.")]
+    public float restLength = 1.5f;
+
+    public float springTravel = 0.5f;
+
+    [Header("Spring Geometry")]
+    [Tooltip("Measure physical spring length from SpringOrigin to PogoTip.")]
+    public bool calculateRestLengthFromTip = false;
+
+    [Header("Spring Preload")]
+    [Tooltip("Extends the spring's resting position beyond the physical rod tip.")]
+    [Min(0f)]
+    public float springPreload = 0.15f;
+
+    [Header("Spring Force")]
     public float springStrength = 1600f;
     public float springDamping = 65f;
     public float maxSpringForce = 10000f;
 
-    [Header("Manual Retraction")]
+    [Header("Spring Direction")]
+    [Range(0f, 1f)]
+    public float springTiltInfluence = 0.15f;
+
+    [Header("Manual Compression")]
     public bool allowRetraction = true;
     public float maxRetraction = 0.4f;
     public float retractSpeed = 1.5f;
     public float extendSpeed = 5f;
 
-    [Header("Landing Response")]
-    public float compressionDamping = 12f;
-    public float reboundDamping = 3f;
-    public float landingCompressionMultiplier = 1f;
-
-    [Header("Bounce Stabilization")]
-    public float maxReboundSpeed = 14f;
-    public float reboundForceFadeStart = 9f;
-    public float maxLandingSpeedForSpring = 22f;
-
-    [Header("Bounce Timing")]
+    [Header("Perfect Bounce")]
     public bool enablePerfectBounce = true;
 
     [Range(0f, 1f)]
@@ -47,8 +70,22 @@ public class PogoSpring : MonoBehaviour
     public float normalReleaseImpulse = 30f;
     public float perfectReleaseImpulse = 65f;
 
-    [Header("Visuals")]
+    [Header("Rebound Control")]
+    public float compressionDamping = 12f;
+    public float reboundDamping = 3f;
+    public float landingCompressionMultiplier = 1f;
+    public float maxReboundSpeed = 14f;
+    public float reboundForceFadeStart = 9f;
+    public float maxLandingSpeedForSpring = 22f;
+
+    [Header("Visual Settings")]
     public float visualSmoothness = 15f;
+
+    [Header("Bounce Audio")]
+    public bool enableBounceSound = true;
+    public float minimumBounceSpeed = 2f;
+    public float minimumImpactSpeedForSound = 2f;
+    public float bounceSoundCooldown = 0.12f;
 
     [Header("Debug")]
     public bool showDebug = false;
@@ -56,12 +93,12 @@ public class PogoSpring : MonoBehaviour
     public bool IsGrounded { get; private set; }
     public float CompressionPercent { get; private set; }
     public bool PerfectBounceTriggered { get; private set; }
-    private bool bounceSoundPlayed = false;
 
     private Rigidbody rb;
 
     private bool jumpHeld;
     private bool releaseQueued;
+
     private float currentRetraction;
     private float currentLength;
     private float compression;
@@ -70,11 +107,20 @@ public class PogoSpring : MonoBehaviour
     private Vector3 lowerStartPosition;
     private Vector3 springStartScale;
 
+    private RaycastHit groundHit;
+    private Vector3 springDirection;
+
+    // Bounce audio state
+    private float lastBounceSoundTime = -100f;
+    private float previousUpwardSpeed;
+    private float strongestLandingSpeed;
+    private bool bounceContactActive;
+
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
 
-        currentLength = restLength;
+        currentLength = GetRestLength();
 
         if (lowerRodVisual != null)
             lowerStartPosition = lowerRodVisual.localPosition;
@@ -110,32 +156,65 @@ public class PogoSpring : MonoBehaviour
     {
         UpdateRetraction();
         CalculateCompression();
+        CalculateSpringDirection();
         ApplySpringForce();
         ProcessRelease();
         CheckBounceSound();
         UpdateVisuals();
     }
 
+    // ==========================================
+    // SPRING LENGTH AND PRELOAD
+    // ==========================================
+
+    private float GetRestLength()
+    {
+        float physicalLength = restLength;
+
+        if (calculateRestLengthFromTip &&
+            springOrigin != null &&
+            pogoTip != null)
+        {
+            Vector3 originToTip =
+                pogoTip.position - springOrigin.position;
+
+            physicalLength = Vector3.Dot(
+                originToTip,
+                -transform.up
+            );
+        }
+
+        return Mathf.Max(
+            0.1f,
+            physicalLength + springPreload
+        );
+    }
+
     private void UpdateRetraction()
     {
-        float target = 0f;
+        float targetRetraction =
+            allowRetraction && jumpHeld
+                ? maxRetraction
+                : 0f;
 
-        if (allowRetraction && jumpHeld)
-            target = maxRetraction;
-
-        float speed = jumpHeld ? retractSpeed : extendSpeed;
+        float speed =
+            jumpHeld ? retractSpeed : extendSpeed;
 
         currentRetraction = Mathf.MoveTowards(
             currentRetraction,
-            target,
+            targetRetraction,
             speed * Time.fixedDeltaTime
         );
 
         currentLength = Mathf.Max(
             0.1f,
-            restLength - currentRetraction
+            GetRestLength() - currentRetraction
         );
     }
+
+    // ==========================================
+    // GROUND DETECTION
+    // ==========================================
 
     private void CalculateCompression()
     {
@@ -143,45 +222,89 @@ public class PogoSpring : MonoBehaviour
         compression = 0f;
         CompressionPercent = 0f;
 
-        Vector3 direction = -transform.up;
+        if (restrictSpringTilt)
+        {
+            float tilt = Vector3.Angle(
+                transform.up,
+                Vector3.up
+            );
 
-        float castDistance = restLength + springTravel;
+            if (tilt > maxSpringTilt)
+                return;
+        }
 
-        if (Physics.SphereCast(
-            transform.position,
+        Vector3 origin = springOrigin != null
+            ? springOrigin.position
+            : transform.position;
+
+        Vector3 down = -transform.up;
+
+        float castDistance =
+            currentLength + springTravel;
+
+        if (!Physics.SphereCast(
+            origin,
             rayRadius,
-            direction,
-            out RaycastHit hit,
+            down,
+            out groundHit,
             castDistance,
             groundMask,
             QueryTriggerInteraction.Ignore))
         {
-            IsGrounded = true;
-
-            compression = Mathf.Clamp(
-                currentLength - hit.distance,
-                0f,
-                springTravel
-            );
-
-            CompressionPercent = Mathf.Clamp01(
-                compression / Mathf.Max(0.01f, springTravel)
-            );
+            return;
         }
+
+        // Reject walls and steep slopes.
+        float surfaceAngle = Vector3.Angle(
+            groundHit.normal,
+            Vector3.up
+        );
+
+        if (surfaceAngle > maxGroundAngle)
+            return;
+
+        IsGrounded = true;
+
+        float groundDistance =
+            groundHit.distance + rayRadius;
+
+        compression = Mathf.Clamp(
+            currentLength - groundDistance,
+            0f,
+            springTravel
+        );
+
+        CompressionPercent = Mathf.Clamp01(
+            compression /
+            Mathf.Max(0.01f, springTravel)
+        );
     }
 
+    // ==========================================
+    // SPRING FORCE
+    // ==========================================
 
+    private void CalculateSpringDirection()
+    {
+        springDirection = Vector3.Slerp(
+            Vector3.up,
+            transform.up,
+            springTiltInfluence
+        ).normalized;
+    }
 
     private void ApplySpringForce()
     {
         if (!IsGrounded || compression <= 0f)
             return;
 
-        Vector3 up = transform.up;
+        Vector3 origin = springOrigin != null
+            ? springOrigin.position
+            : transform.position;
 
         float velocity = Vector3.Dot(
-            rb.GetPointVelocity(transform.position),
-            up
+            rb.GetPointVelocity(origin),
+            springDirection
         );
 
         bool compressing = velocity < 0f;
@@ -190,7 +313,6 @@ public class PogoSpring : MonoBehaviour
             ? compressionDamping
             : reboundDamping;
 
-        // Limit extreme landing velocities used in damping.
         float limitedVelocity = Mathf.Max(
             velocity,
             -maxLandingSpeedForSpring
@@ -203,7 +325,6 @@ public class PogoSpring : MonoBehaviour
         if (compressing)
             force *= landingCompressionMultiplier;
 
-        // Gradually reduce spring force as rebound speed rises.
         if (velocity > reboundForceFadeStart)
         {
             float fade = Mathf.InverseLerp(
@@ -222,13 +343,14 @@ public class PogoSpring : MonoBehaviour
         );
 
         rb.AddForce(
-            up * force,
+            springDirection * force,
             ForceMode.Force
         );
-
     }
 
-
+    // ==========================================
+    // MANUAL RELEASE / PERFECT BOUNCE
+    // ==========================================
 
     private void ProcessRelease()
     {
@@ -255,31 +377,95 @@ public class PogoSpring : MonoBehaviour
 
         float upwardSpeed = Vector3.Dot(
             rb.linearVelocity,
-            transform.up
+            springDirection
         );
 
-        float availableSpeed =
-            Mathf.Max(0f, maxReboundSpeed - upwardSpeed);
+        float availableSpeed = Mathf.Max(
+            0f,
+            maxReboundSpeed - upwardSpeed
+        );
 
-        float maxAllowedImpulse = availableSpeed * rb.mass;
-
-        impulse = Mathf.Min(impulse, maxAllowedImpulse);
+        impulse = Mathf.Min(
+            impulse,
+            availableSpeed * rb.mass
+        );
 
         rb.AddForce(
-            transform.up * impulse,
+            springDirection * impulse,
             ForceMode.Impulse
         );
-        
 
         PerfectBounceTriggered = perfect;
-
-        if (showDebug)
-        {
-            Debug.Log(perfect
-                ? "PERFECT BOUNCE!"
-                : "Normal Bounce");
-        }
     }
+
+    // ==========================================
+    // AUTOMATIC BOUNCE SOUND
+    // ==========================================
+
+    private void CheckBounceSound()
+    {
+        if (rb == null)
+            return;
+
+        float upwardSpeed = rb.linearVelocity.y;
+
+        if (IsGrounded && compression > 0f)
+        {
+            bounceContactActive = true;
+
+            if (upwardSpeed < 0f)
+            {
+                strongestLandingSpeed = Mathf.Max(
+                    strongestLandingSpeed,
+                    -upwardSpeed
+                );
+            }
+        }
+
+        bool rebounded =
+            previousUpwardSpeed <= minimumBounceSpeed &&
+            upwardSpeed > minimumBounceSpeed;
+
+        bool validBounce =
+            bounceContactActive &&
+            strongestLandingSpeed >=
+            minimumImpactSpeedForSound;
+
+        if (enableBounceSound &&
+            rebounded &&
+            validBounce &&
+            Time.time - lastBounceSoundTime >=
+            bounceSoundCooldown)
+        {
+            SoundManager.Instance?.Play("Jump");
+
+            lastBounceSoundTime = Time.time;
+
+            if (showDebug)
+            {
+                Debug.Log(
+                    $"Pogo Bounce! Impact: " +
+                    $"{strongestLandingSpeed:F2}, " +
+                    $"Rebound: {upwardSpeed:F2}"
+                );
+            }
+
+            bounceContactActive = false;
+            strongestLandingSpeed = 0f;
+        }
+
+        if (!IsGrounded && upwardSpeed <= 0f)
+        {
+            bounceContactActive = false;
+            strongestLandingSpeed = 0f;
+        }
+
+        previousUpwardSpeed = upwardSpeed;
+    }
+
+    // ==========================================
+    // SPRING VISUALS
+    // ==========================================
 
     private void UpdateVisuals()
     {
@@ -290,7 +476,8 @@ public class PogoSpring : MonoBehaviour
             visualCompression,
             totalCompression,
             1f - Mathf.Exp(
-                -visualSmoothness * Time.fixedDeltaTime
+                -visualSmoothness *
+                Time.fixedDeltaTime
             )
         );
 
@@ -303,27 +490,37 @@ public class PogoSpring : MonoBehaviour
 
         if (springVisual != null)
         {
-            float maxCompression =
-                springTravel + maxRetraction;
-
             float percent = Mathf.Clamp01(
                 visualCompression /
-                Mathf.Max(0.01f, maxCompression)
+                Mathf.Max(
+                    0.01f,
+                    springTravel + maxRetraction
+                )
             );
 
             Vector3 scale = springStartScale;
-            scale.y *= Mathf.Lerp(1f, 0.35f, percent);
+
+            scale.y *= Mathf.Lerp(
+                1f,
+                0.35f,
+                percent
+            );
 
             springVisual.localScale = scale;
         }
     }
 
+    // ==========================================
+    // RESET
+    // ==========================================
+
     public void ResetSpring()
     {
         jumpHeld = false;
         releaseQueued = false;
+
         currentRetraction = 0f;
-        currentLength = restLength;
+        currentLength = GetRestLength();
         compression = 0f;
         visualCompression = 0f;
 
@@ -331,49 +528,106 @@ public class PogoSpring : MonoBehaviour
         CompressionPercent = 0f;
         PerfectBounceTriggered = false;
 
+        lastBounceSoundTime = -100f;
+        previousUpwardSpeed = 0f;
+        strongestLandingSpeed = 0f;
+        bounceContactActive = false;
+
         if (lowerRodVisual != null)
-            lowerRodVisual.localPosition = lowerStartPosition;
+        {
+            lowerRodVisual.localPosition =
+                lowerStartPosition;
+        }
 
         if (springVisual != null)
-            springVisual.localScale = springStartScale;
-    }
-    private void CheckBounceSound()
-    {
-        // Reset when the pogo leaves the ground.
-        if (!IsGrounded || compression <= 0f)
         {
-            bounceSoundPlayed = false;
-            return;
-        }
-
-        // Check whether the pogo is moving upward.
-        float upwardVelocity = Vector3.Dot(
-            rb.linearVelocity,
-            transform.up
-        );
-
-        // Play once when the spring begins rebounding.
-        if (upwardVelocity > 0.5f && !bounceSoundPlayed)
-        {
-            SoundManager.Instance?.Play("Jump");
-
-            bounceSoundPlayed = true;
+            springVisual.localScale =
+                springStartScale;
         }
     }
 
+    // ==========================================
+    // DEBUG GIZMOS
+    // ==========================================
 
     private void OnDrawGizmosSelected()
     {
-        Gizmos.color = IsGrounded ? Color.green : Color.red;
+        Vector3 origin = springOrigin != null
+            ? springOrigin.position
+            : transform.position;
 
-        Gizmos.DrawLine(
-            transform.position,
-            transform.position - transform.up * restLength
-        );
+        Vector3 down = -transform.up;
+
+        float physicalLength = restLength;
+
+        if (calculateRestLengthFromTip &&
+            springOrigin != null &&
+            pogoTip != null)
+        {
+            physicalLength = Vector3.Dot(
+                pogoTip.position - springOrigin.position,
+                down
+            );
+        }
+
+        physicalLength = Mathf.Max(0.1f, physicalLength);
+
+        float restingLength = Application.isPlaying
+            ? currentLength
+            : GetRestLength();
+
+        // Blue: physical tip position
+        Gizmos.color = Color.blue;
 
         Gizmos.DrawWireSphere(
-            transform.position - transform.up * restLength,
+            origin + down * physicalLength,
             rayRadius
         );
+
+        // Red: spring resting position including preload
+        Gizmos.color = Color.red;
+
+        Vector3 restPosition =
+            origin + down * restingLength;
+
+        Gizmos.DrawWireSphere(
+            restPosition,
+            rayRadius
+        );
+
+        Gizmos.DrawLine(origin, restPosition);
+
+        // Yellow: maximum detection range
+        Gizmos.color = Color.yellow;
+
+        Vector3 maxPosition =
+            origin + down * (restingLength + springTravel);
+
+        Gizmos.DrawWireSphere(
+            maxPosition,
+            rayRadius
+        );
+
+        // Green: valid ground contact
+        if (Application.isPlaying && IsGrounded)
+        {
+            Gizmos.color = Color.green;
+
+            Gizmos.DrawWireSphere(
+                groundHit.point,
+                0.1f
+            );
+        }
+
+        // Cyan: applied spring direction
+        if (Application.isPlaying)
+        {
+            Gizmos.color = Color.cyan;
+
+            Gizmos.DrawRay(
+                origin,
+                springDirection * 2f
+            );
+        }
     }
 }

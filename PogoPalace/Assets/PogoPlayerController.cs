@@ -25,7 +25,6 @@ public class PogoPlayerController : MonoBehaviour
 
     [Header("Tilt-Based Air Movement")]
     public bool useTiltAirMovement = true;
-
     public float airMovementAcceleration = 10f;
     public float maxAirMovementSpeed = 12f;
 
@@ -37,6 +36,11 @@ public class PogoPlayerController : MonoBehaviour
     [Range(0f, 2f)]
     public float airControlStrength = 0.5f;
 
+    [Header("Air Control Input")]
+    public InputActionReference airMovementAction;
+    public bool requireButtonForAirControl = true;
+    public bool showAirControlDebug = false;
+
     [Header("Wobble Balance")]
     public float uprightStrength = 25f;
     public float uprightDamping = 5f;
@@ -45,7 +49,6 @@ public class PogoPlayerController : MonoBehaviour
     [Header("Manual Y Rotation")]
     public bool enableManualRotation = true;
     public InputActionReference rotateAction;
-
     public float rotationTorque = 20f;
     public float rotationDamping = 5f;
     public float maxRotationSpeed = 4f;
@@ -66,16 +69,23 @@ public class PogoPlayerController : MonoBehaviour
 
     [Header("Ground Traction")]
     public bool useGroundTraction = true;
-
     public float groundGrip = 12f;
     public float groundAcceleration = 8f;
     public float maxGroundSpeed = 7f;
-
     public float brakingStrength = 18f;
 
-
+    [Header("Center of Mass")]
+    public bool overrideCenterOfMass = true;
     public Vector3 centerOfMassOffset =
         new Vector3(0f, -0.75f, 0f);
+
+    [Header("Center of Mass Debug")]
+    public bool showCenterOfMass = true;
+    public bool showCenterOfMassOnlyWhenSelected = false;
+    public float centerOfMassGizmoRadius = 0.15f;
+    public Color centerOfMassGizmoColor = Color.magenta;
+    public bool showCenterOfMassConnection = true;
+    public bool showCenterOfMassVerticalAxis = false;
 
     [Header("Debug")]
     public bool showDebugLogs = false;
@@ -85,17 +95,23 @@ public class PogoPlayerController : MonoBehaviour
 
     private Vector2 moveInput;
     private bool grounded;
+    private bool airControlButtonHeld;
 
     private Vector3 spawnPosition;
     private Quaternion spawnRotation;
+
+    private Vector3 lastCenterOfMassOffset;
+    private bool lastOverrideCenterOfMass;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
         pogoSpring = GetComponent<PogoSpring>();
 
-        rb.centerOfMass = centerOfMassOffset;
-        rb.interpolation = RigidbodyInterpolation.Interpolate;
+        ApplyCenterOfMass();
+
+        rb.interpolation =
+            RigidbodyInterpolation.Interpolate;
 
         spawnPosition = transform.position;
         spawnRotation = transform.rotation;
@@ -106,6 +122,7 @@ public class PogoPlayerController : MonoBehaviour
         moveAction?.action.Enable();
         resetAction?.action.Enable();
         rotateAction?.action.Enable();
+        airMovementAction?.action.Enable();
     }
 
     private void OnDisable()
@@ -113,10 +130,31 @@ public class PogoPlayerController : MonoBehaviour
         moveAction?.action.Disable();
         resetAction?.action.Disable();
         rotateAction?.action.Disable();
+        airMovementAction?.action.Disable();
+
+        airControlButtonHeld = false;
     }
 
     private void Update()
     {
+        bool previousAirControlButtonHeld =
+            airControlButtonHeld;
+
+        airControlButtonHeld =
+            airMovementAction != null &&
+            airMovementAction.action != null &&
+            airMovementAction.action.IsPressed();
+
+        if (showAirControlDebug &&
+            previousAirControlButtonHeld != airControlButtonHeld)
+        {
+            Debug.Log(
+                airControlButtonHeld
+                    ? "Air movement button pressed"
+                    : "Air movement button released"
+            );
+        }
+
         if (moveAction != null)
         {
             moveInput =
@@ -132,8 +170,11 @@ public class PogoPlayerController : MonoBehaviour
 
     private void FixedUpdate()
     {
-        grounded = pogoSpring != null &&
-                   pogoSpring.IsGrounded;
+        UpdateCenterOfMass();
+
+        grounded =
+            pogoSpring != null &&
+            pogoSpring.IsGrounded;
 
         ApplyTilt();
         ApplyUprightBalance();
@@ -142,9 +183,50 @@ public class PogoPlayerController : MonoBehaviour
         ApplyTiltAirMovement();
         ApplyCustomGravity();
         ApplyManualRotation();
-
     }
 
+    // =====================================
+    // CENTER OF MASS
+    // =====================================
+
+    private void ApplyCenterOfMass()
+    {
+        if (rb == null)
+            rb = GetComponent<Rigidbody>();
+
+        if (rb == null)
+            return;
+
+        if (overrideCenterOfMass)
+            rb.centerOfMass = centerOfMassOffset;
+        else
+            rb.ResetCenterOfMass();
+
+        lastCenterOfMassOffset = centerOfMassOffset;
+        lastOverrideCenterOfMass = overrideCenterOfMass;
+    }
+
+    private void UpdateCenterOfMass()
+    {
+        if (lastCenterOfMassOffset != centerOfMassOffset ||
+            lastOverrideCenterOfMass != overrideCenterOfMass)
+        {
+            ApplyCenterOfMass();
+        }
+    }
+
+    private void OnValidate()
+    {
+        centerOfMassGizmoRadius =
+            Mathf.Max(0.01f, centerOfMassGizmoRadius);
+
+        if (Application.isPlaying)
+            ApplyCenterOfMass();
+    }
+
+    // =====================================
+    // TILT MOVEMENT
+    // =====================================
 
     private void ApplyTilt()
     {
@@ -154,7 +236,6 @@ public class PogoPlayerController : MonoBehaviour
         Vector3 forward = cameraTransform.forward;
         Vector3 right = cameraTransform.right;
 
-        // Keep input relative to the camera's horizontal direction.
         forward.y = 0f;
         right.y = 0f;
 
@@ -195,7 +276,6 @@ public class PogoPlayerController : MonoBehaviour
         {
             if (allowFullAirRotation)
             {
-                // No tilt limit while airborne.
                 rb.AddTorque(
                     torqueAxis * airTorque,
                     ForceMode.Acceleration
@@ -219,38 +299,32 @@ public class PogoPlayerController : MonoBehaviour
         }
     }
 
+    // =====================================
+    // CUSTOM GRAVITY
+    // =====================================
 
     private void ApplyCustomGravity()
     {
-        if (grounded)
-            return;
-        if (!useCustomGravity)
+        if (grounded || !useCustomGravity)
             return;
 
-        // World-space vertical speed, independent of pogo rotation.
         float verticalVelocity = rb.linearVelocity.y;
-
         float gravityMultiplier;
 
-        if (Mathf.Abs(verticalVelocity) < apexVelocityThreshold
-            && !grounded)
+        if (Mathf.Abs(verticalVelocity) <
+            apexVelocityThreshold)
         {
-            // Reduce floating near the top of the jump.
             gravityMultiplier = apexGravityMultiplier;
         }
         else if (verticalVelocity < 0f)
         {
-            // Stronger gravity when falling.
             gravityMultiplier = fallingGravityMultiplier;
         }
         else
         {
-            // Normal-ish gravity while rising.
             gravityMultiplier = risingGravityMultiplier;
         }
 
-        // Rigidbody already receives normal gravity when
-        // Use Gravity is enabled, so add only the extra amount.
         Vector3 additionalGravity =
             Physics.gravity * (gravityMultiplier - 1f);
 
@@ -260,17 +334,26 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
-
+    // =====================================
+    // TILT-BASED AIR MOVEMENT
+    // =====================================
 
     private void ApplyTiltAirMovement()
     {
         if (!useTiltAirMovement || grounded)
             return;
 
-        // The pogo's upward axis determines movement direction.
+        // NEW INPUT SYSTEM:
+        // Only accelerate in the air while
+        // the assigned button action is held.
+        if (requireButtonForAirControl &&
+            !airControlButtonHeld)
+        {
+            return;
+        }
+
         Vector3 pogoDirection = transform.up;
 
-        // Only use horizontal lean.
         Vector3 horizontalLean = new Vector3(
             pogoDirection.x,
             0f,
@@ -279,11 +362,9 @@ public class PogoPlayerController : MonoBehaviour
 
         float leanAmount = horizontalLean.magnitude;
 
-        // Ignore very small accidental tilts.
         if (leanAmount < airMovementDeadzone)
             return;
 
-        // Normalize the lean strength above the deadzone.
         float normalizedLean = Mathf.InverseLerp(
             airMovementDeadzone,
             1f,
@@ -304,22 +385,18 @@ public class PogoPlayerController : MonoBehaviour
             rb.linearVelocity.z
         );
 
-        // Desired acceleration based on the player's lean.
         Vector3 acceleration =
             movementDirection *
             airMovementAcceleration *
             normalizedLean;
 
-        // Only limit acceleration that would increase speed
-        // beyond the configured maximum.
         Vector3 predictedVelocity =
             horizontalVelocity +
             acceleration * Time.fixedDeltaTime;
 
-        if (predictedVelocity.magnitude > maxAirMovementSpeed)
+        if (predictedVelocity.magnitude >
+            maxAirMovementSpeed)
         {
-            // Allow acceleration that reduces existing speed,
-            // but prevent further speed buildup.
             if (Vector3.Dot(
                 acceleration,
                 horizontalVelocity
@@ -335,7 +412,9 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
-
+    // =====================================
+    // UPRIGHT BALANCE
+    // =====================================
 
     private void ApplyUprightBalance()
     {
@@ -368,6 +447,10 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
+    // =====================================
+    // AIR ROTATION DAMPING
+    // =====================================
+
     private void ApplyAirRotationDamping()
     {
         if (grounded)
@@ -379,6 +462,9 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
+    // =====================================
+    // GROUND TRACTION
+    // =====================================
 
     private void ApplyGroundTraction()
     {
@@ -401,13 +487,11 @@ public class PogoPlayerController : MonoBehaviour
             forward * moveInput.y +
             right * moveInput.x;
 
-        inputDirection = Vector3.ClampMagnitude(
-            inputDirection, 1f
-        );
+        inputDirection =
+            Vector3.ClampMagnitude(inputDirection, 1f);
 
         Vector3 velocity = rb.linearVelocity;
 
-        // Only modify horizontal velocity.
         Vector3 horizontalVelocity = new Vector3(
             velocity.x,
             0f,
@@ -417,10 +501,10 @@ public class PogoPlayerController : MonoBehaviour
         Vector3 targetVelocity =
             inputDirection * maxGroundSpeed;
 
-        // Different response when moving vs releasing input.
-        float acceleration = inputDirection.sqrMagnitude > 0.01f
-            ? groundAcceleration
-            : brakingStrength;
+        float acceleration =
+            inputDirection.sqrMagnitude > 0.01f
+                ? groundAcceleration
+                : brakingStrength;
 
         Vector3 velocityDifference =
             targetVelocity - horizontalVelocity;
@@ -439,7 +523,9 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
-
+    // =====================================
+    // MANUAL Y ROTATION
+    // =====================================
 
     private void ApplyManualRotation()
     {
@@ -449,8 +535,6 @@ public class PogoPlayerController : MonoBehaviour
         float rotationInput =
             rotateAction.action.ReadValue<float>();
 
-        // Use the world's vertical axis so the player
-        // rotates horizontally even when leaning.
         Vector3 rotationAxis = Vector3.up;
 
         float currentRotationSpeed = Vector3.Dot(
@@ -458,16 +542,13 @@ public class PogoPlayerController : MonoBehaviour
             rotationAxis
         );
 
-        // Target angular velocity in radians per second.
         float targetRotationSpeed =
             rotationInput * maxRotationSpeed;
 
-        // Accelerate toward the desired rotation speed.
         float rotationAcceleration =
             (targetRotationSpeed - currentRotationSpeed) *
             rotationTorque;
 
-        // Additional damping when no key is held.
         if (Mathf.Abs(rotationInput) < 0.01f)
         {
             rotationAcceleration =
@@ -480,8 +561,9 @@ public class PogoPlayerController : MonoBehaviour
         );
     }
 
-
-
+    // =====================================
+    // RESET
+    // =====================================
 
     public void ResetPlayer()
     {
@@ -497,7 +579,91 @@ public class PogoPlayerController : MonoBehaviour
         if (pogoSpring != null)
             pogoSpring.ResetSpring();
 
+        ApplyCenterOfMass();
+
         if (showDebugLogs)
             Debug.Log("Pogo Player Reset!");
+    }
+
+    // =====================================
+    // CENTER OF MASS GIZMOS
+    // =====================================
+
+    private void OnDrawGizmos()
+    {
+        if (!showCenterOfMassOnlyWhenSelected)
+            DrawCenterOfMassGizmos();
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        if (showCenterOfMassOnlyWhenSelected)
+            DrawCenterOfMassGizmos();
+    }
+
+    private void DrawCenterOfMassGizmos()
+    {
+        if (!showCenterOfMass)
+            return;
+
+        Rigidbody body = GetComponent<Rigidbody>();
+
+        if (body == null)
+            return;
+
+        Vector3 worldCenter;
+
+        if (Application.isPlaying)
+        {
+            worldCenter = body.worldCenterOfMass;
+        }
+        else if (overrideCenterOfMass)
+        {
+            worldCenter =
+                transform.TransformPoint(centerOfMassOffset);
+        }
+        else
+        {
+            worldCenter = body.worldCenterOfMass;
+        }
+
+        Gizmos.color = centerOfMassGizmoColor;
+
+        Gizmos.DrawSphere(
+            worldCenter,
+            centerOfMassGizmoRadius
+        );
+
+        Gizmos.color = Color.white;
+
+        Gizmos.DrawWireSphere(
+            worldCenter,
+            centerOfMassGizmoRadius * 1.15f
+        );
+
+        if (showCenterOfMassConnection)
+        {
+            Gizmos.color = Color.yellow;
+
+            Gizmos.DrawLine(
+                transform.position,
+                worldCenter
+            );
+
+            Gizmos.DrawWireSphere(
+                transform.position,
+                centerOfMassGizmoRadius * 0.4f
+            );
+        }
+
+        if (showCenterOfMassVerticalAxis)
+        {
+            Gizmos.color = Color.green;
+
+            Gizmos.DrawLine(
+                worldCenter - Vector3.up,
+                worldCenter + Vector3.up
+            );
+        }
     }
 }
