@@ -23,6 +23,9 @@ public class PogoLandingEffect : MonoBehaviour
     public int minParticles = 8;
     public int maxParticles = 35;
 
+    [Header("Combat")]
+    public PogoLandingShockwave landingShockwave;
+
     [Header("Particle Size")]
     public float minParticleSize = 0.1f;
     public float maxParticleSize = 0.4f;
@@ -36,10 +39,13 @@ public class PogoLandingEffect : MonoBehaviour
 
     [Header("Ground Collision")]
     public bool enableParticleCollision = true;
+
     [Range(0f, 1f)]
     public float groundBounce = 0.05f;
+
     [Range(0f, 1f)]
     public float groundDampen = 0.8f;
+
     public float particleCollisionRadiusScale = 0.5f;
 
     [Header("Particle Appearance")]
@@ -70,6 +76,10 @@ public class PogoLandingEffect : MonoBehaviour
         if (pogoSpring == null)
             pogoSpring = GetComponent<PogoSpring>();
 
+        if (landingShockwave == null)
+            landingShockwave =
+                GetComponent<PogoLandingShockwave>();
+
         CreateParticleSystem();
     }
 
@@ -78,10 +88,11 @@ public class PogoLandingEffect : MonoBehaviour
         if (playerRigidbody == null || pogoTip == null)
             return;
 
-        // Measure downward speed along the surface normal
-        // before processing the landing.
+        // Measure the velocity of the pogo tip.
         Vector3 tipVelocity =
-            playerRigidbody.GetPointVelocity(pogoTip.position);
+            playerRigidbody.GetPointVelocity(
+                pogoTip.position
+            );
 
         // Detect ground immediately below the pogo tip.
         bool touchingGround = Physics.SphereCast(
@@ -96,6 +107,7 @@ public class PogoLandingEffect : MonoBehaviour
 
         isGrounded = touchingGround;
 
+        // Only trigger on the first frame of a landing.
         if (touchingGround && !wasGrounded)
         {
             float impactSpeed = Mathf.Max(
@@ -113,14 +125,25 @@ public class PogoLandingEffect : MonoBehaviour
                     impactSpeed
                 );
 
-                Color surfaceColor = GetSurfaceColor(hit);
+                Color surfaceColor =
+                    GetSurfaceColor(hit);
 
+                // Existing cube debris effect.
                 SpawnParticles(
                     hit.point,
                     hit.normal,
                     surfaceColor,
                     impactPercent
                 );
+
+                // NEW: Damage and knock back nearby enemies.
+                // Uses the same impact speed as the particles.
+                if (landingShockwave != null)
+                {
+                    landingShockwave.TriggerShockwave(
+                        impactSpeed
+                    );
+                }
 
                 if (showDebug)
                 {
@@ -134,6 +157,7 @@ public class PogoLandingEffect : MonoBehaviour
         }
 
         wasGrounded = touchingGround;
+
         previousVerticalSpeed =
             playerRigidbody.linearVelocity.y;
     }
@@ -143,7 +167,10 @@ public class PogoLandingEffect : MonoBehaviour
         GameObject particleObject =
             new GameObject("LandingCubeParticles");
 
-        particleObject.transform.SetParent(transform, false);
+        particleObject.transform.SetParent(
+            transform,
+            false
+        );
 
         landingParticles =
             particleObject.AddComponent<ParticleSystem>();
@@ -160,10 +187,13 @@ public class PogoLandingEffect : MonoBehaviour
         main.startSpeed = 0f;
         main.startSize = 1f;
         main.startColor = Color.white;
-        main.maxParticles = Mathf.Max(100, maxParticles * 5);
+        main.maxParticles = Mathf.Max(
+            100,
+            maxParticles * 5
+        );
 
-        // World simulation prevents emitted cubes from
-        // following the pogo after landing.
+        // World simulation prevents emitted cubes
+        // from following the pogo after landing.
         main.simulationSpace =
             ParticleSystemSimulationSpace.World;
 
@@ -179,24 +209,34 @@ public class PogoLandingEffect : MonoBehaviour
         var collision = landingParticles.collision;
 
         collision.enabled = enableParticleCollision;
-        collision.type = ParticleSystemCollisionType.World;
-        collision.mode = ParticleSystemCollisionMode.Collision3D;
+        collision.type =
+            ParticleSystemCollisionType.World;
+
+        collision.mode =
+            ParticleSystemCollisionMode.Collision3D;
+
         collision.collidesWith = groundMask;
         collision.bounce = groundBounce;
         collision.dampen = groundDampen;
-        collision.radiusScale = particleCollisionRadiusScale;
+        collision.radiusScale =
+            particleCollisionRadiusScale;
+
         collision.lifetimeLoss = 0f;
-        collision.quality = ParticleSystemCollisionQuality.High;
+        collision.quality =
+            ParticleSystemCollisionQuality.High;
 
         particleRenderer.renderMode =
             ParticleSystemRenderMode.Mesh;
 
         particleRenderer.mesh =
-            cubeMesh != null ? cubeMesh : CreateCubeMesh();
+            cubeMesh != null
+                ? cubeMesh
+                : CreateCubeMesh();
 
         if (particleMaterial != null)
         {
-            particleRenderer.sharedMaterial = particleMaterial;
+            particleRenderer.sharedMaterial =
+                particleMaterial;
         }
         else
         {
@@ -214,7 +254,9 @@ public class PogoLandingEffect : MonoBehaviour
     private Mesh CreateCubeMesh()
     {
         GameObject cube =
-            GameObject.CreatePrimitive(PrimitiveType.Cube);
+            GameObject.CreatePrimitive(
+                PrimitiveType.Cube
+            );
 
         Mesh mesh =
             cube.GetComponent<MeshFilter>().sharedMesh;
@@ -230,13 +272,16 @@ public class PogoLandingEffect : MonoBehaviour
             hit.collider.GetComponent<Renderer>();
 
         if (surfaceRenderer == null)
+        {
             surfaceRenderer =
                 hit.collider.GetComponentInParent<Renderer>();
+        }
 
         if (surfaceRenderer == null)
             return fallbackColor;
 
-        Material material = surfaceRenderer.sharedMaterial;
+        Material material =
+            surfaceRenderer.sharedMaterial;
 
         if (material == null)
             return fallbackColor;
@@ -244,17 +289,29 @@ public class PogoLandingEffect : MonoBehaviour
         Color materialColor = Color.white;
 
         if (material.HasProperty("_BaseColor"))
-            materialColor = material.GetColor("_BaseColor");
+        {
+            materialColor =
+                material.GetColor("_BaseColor");
+        }
         else if (material.HasProperty("_Color"))
-            materialColor = material.GetColor("_Color");
+        {
+            materialColor =
+                material.GetColor("_Color");
+        }
 
         // Try sampling the texture at the collision point.
         Texture texture = null;
 
         if (material.HasProperty("_BaseMap"))
-            texture = material.GetTexture("_BaseMap");
+        {
+            texture =
+                material.GetTexture("_BaseMap");
+        }
         else if (material.HasProperty("_MainTex"))
-            texture = material.GetTexture("_MainTex");
+        {
+            texture =
+                material.GetTexture("_MainTex");
+        }
 
         if (texture is Texture2D texture2D)
         {
@@ -262,13 +319,22 @@ public class PogoLandingEffect : MonoBehaviour
             {
                 Vector2 uv = hit.textureCoord;
 
-                Vector2 tiling = material.mainTextureScale;
-                Vector2 offset = material.mainTextureOffset;
+                Vector2 tiling =
+                    material.mainTextureScale;
 
-                uv = Vector2.Scale(uv, tiling) + offset;
+                Vector2 offset =
+                    material.mainTextureOffset;
+
+                uv = Vector2.Scale(
+                    uv,
+                    tiling
+                ) + offset;
 
                 Color textureColor =
-                    texture2D.GetPixelBilinear(uv.x, uv.y);
+                    texture2D.GetPixelBilinear(
+                        uv.x,
+                        uv.y
+                    );
 
                 return textureColor * materialColor;
             }
@@ -277,8 +343,9 @@ public class PogoLandingEffect : MonoBehaviour
                 if (showDebug)
                 {
                     Debug.LogWarning(
-                        "PogoLandingEffect: Ground texture is not readable. " +
-                        "Using material color instead."
+                        "PogoLandingEffect: Ground texture " +
+                        "is not readable. Using material " +
+                        "color instead."
                     );
                 }
             }
@@ -294,7 +361,11 @@ public class PogoLandingEffect : MonoBehaviour
         float impactPercent)
     {
         int count = Mathf.RoundToInt(
-            Mathf.Lerp(minParticles, maxParticles, impactPercent)
+            Mathf.Lerp(
+                minParticles,
+                maxParticles,
+                impactPercent
+            )
         );
 
         float size = Mathf.Lerp(
@@ -341,17 +412,29 @@ public class PogoLandingEffect : MonoBehaviour
             particle.position = spawnPosition;
 
             particle.velocity =
-                velocity * Random.Range(0.6f, 1.2f);
+                velocity * Random.Range(
+                    0.6f,
+                    1.2f
+                );
 
             particle.startSize =
-                size * Random.Range(0.7f, 1.3f);
+                size * Random.Range(
+                    0.7f,
+                    1.3f
+                );
 
             particle.startColor = color;
 
             particle.startLifetime =
-                particleLifetime * Random.Range(0.7f, 1.2f);
+                particleLifetime * Random.Range(
+                    0.7f,
+                    1.2f
+                );
 
-            landingParticles.Emit(particle, 1);
+            landingParticles.Emit(
+                particle,
+                1
+            );
         }
     }
 
@@ -363,7 +446,8 @@ public class PogoLandingEffect : MonoBehaviour
         Gizmos.color = Color.yellow;
 
         Vector3 origin =
-            pogoTip.position + transform.up * 0.1f;
+            pogoTip.position +
+            transform.up * 0.1f;
 
         Gizmos.DrawWireSphere(
             origin,
@@ -372,7 +456,8 @@ public class PogoLandingEffect : MonoBehaviour
 
         Gizmos.DrawLine(
             origin,
-            origin - transform.up * groundCheckDistance
+            origin -
+            transform.up * groundCheckDistance
         );
     }
 }
