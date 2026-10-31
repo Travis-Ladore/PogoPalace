@@ -1,4 +1,5 @@
 
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -78,6 +79,16 @@ public class PogoSpring : MonoBehaviour
     public float reboundForceFadeStart = 9f;
     public float maxLandingSpeedForSpring = 22f;
 
+    [Header("Bounce Suppression")]
+    [Tooltip("Holding Jump prevents the spring's continuous force from rebounding on landing. Releasing still triggers the original charged jump.")]
+    public bool suppressReboundWhileJumpHeld = true;
+
+    [Tooltip("Prevent a bounce when the body contacted the ground while nearly horizontal, until the body leaves that surface.")]
+    public bool suppressFlatRecoveryBounce = true;
+
+    [Range(0f, 180f)]
+    public float flatRecoveryAngle = 75f;
+
     [Header("Visual Settings")]
     public float visualSmoothness = 15f;
 
@@ -98,6 +109,12 @@ public class PogoSpring : MonoBehaviour
 
     private bool jumpHeld;
     private bool releaseQueued;
+
+    // Remember body/rod contacts with ground colliders. A flat landing
+    // stays disqualified until those contacts end, even if we stand up.
+    private readonly HashSet<Collider> groundContacts = new HashSet<Collider>();
+    private bool flatContactLocked;
+
 
     private float currentRetraction;
     private float currentLength;
@@ -137,6 +154,49 @@ public class PogoSpring : MonoBehaviour
     private void OnDisable()
     {
         jumpAction?.action.Disable();
+        jumpHeld = false;
+        releaseQueued = false;
+        groundContacts.Clear();
+        flatContactLocked = false;
+    }
+
+    private bool IsGroundLayer(int layer)
+    {
+        return (groundMask.value & (1 << layer)) != 0;
+    }
+
+    private void RegisterGroundContact(Collision collision)
+    {
+        if (!IsGroundLayer(collision.gameObject.layer))
+            return;
+
+        groundContacts.Add(collision.collider);
+
+        if (suppressFlatRecoveryBounce &&
+            Vector3.Angle(transform.up, Vector3.up) >= flatRecoveryAngle)
+        {
+            flatContactLocked = true;
+        }
+    }
+
+    private void OnCollisionEnter(Collision collision)
+    {
+        RegisterGroundContact(collision);
+    }
+
+    private void OnCollisionStay(Collision collision)
+    {
+        RegisterGroundContact(collision);
+    }
+
+    private void OnCollisionExit(Collision collision)
+    {
+        if (!IsGroundLayer(collision.gameObject.layer))
+            return;
+
+        groundContacts.Remove(collision.collider);
+        if (groundContacts.Count == 0)
+            flatContactLocked = false;
     }
 
     private void Update()
@@ -298,6 +358,16 @@ public class PogoSpring : MonoBehaviour
         if (!IsGrounded || compression <= 0f)
             return;
 
+        // Keep the existing spring and angled launch calculations, but
+        // do not use the spring to lever the character upright from a fall.
+        if (suppressFlatRecoveryBounce && flatContactLocked)
+            return;
+
+        // Holding Jump still retracts the rod and stores a manual release;
+        // it just cannot produce a passive spring rebound on landing.
+        if (suppressReboundWhileJumpHeld && jumpHeld)
+            return;
+
         Vector3 origin = springOrigin != null
             ? springOrigin.position
             : transform.position;
@@ -362,6 +432,11 @@ public class PogoSpring : MonoBehaviour
         releaseQueued = false;
 
         if (!IsGrounded || !allowRetraction)
+            return;
+
+        // A release while recovering from a flat fall cannot create
+        // an unexpected jump during the same body-ground contact.
+        if (suppressFlatRecoveryBounce && flatContactLocked)
             return;
 
         bool perfect =
@@ -532,6 +607,9 @@ public class PogoSpring : MonoBehaviour
         previousUpwardSpeed = 0f;
         strongestLandingSpeed = 0f;
         bounceContactActive = false;
+
+        groundContacts.Clear();
+        flatContactLocked = false;
 
         if (lowerRodVisual != null)
         {
